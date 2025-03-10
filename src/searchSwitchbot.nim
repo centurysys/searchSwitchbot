@@ -15,7 +15,7 @@ type
     Curtain = "c"
     Curtain3 = "{"
     MotionSensor = "s"
-    ContactSecor = "d"
+    ContactSensor = "d"
     ColorBulb = "u"
     LedStripLight = "r"
     SmartLock = "o"
@@ -48,8 +48,6 @@ proc startStopScan(self: App, start: bool): Future[bool] {.async.} =
   const scanFilterPolicy = ScanFilterPolicy.AcceptAllExceptNotDirected
   result = await self.ble.startStopScan(active = true, enable = start,
       filterPolicy = scanFilterPolicy)
-  let startStop = if start: "start" else: "stop"
-  echo &"startStopScan({startStop}) -> result: {result}"
 
 # ------------------------------------------------------------------------------
 #
@@ -70,6 +68,7 @@ proc handleDevice(self: App, device: BleDevice) =
       echo errmsg
       return
   else:
+    echo &"Address: {device.peerAddrStr} found."
     if device.manufacturerData.isNone:
       return
     let manData = device.manufacturerData.get()
