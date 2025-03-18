@@ -57,6 +57,22 @@ proc startStopScan(self: App, start: bool): Future[bool] {.async.} =
 # ------------------------------------------------------------------------------
 #
 # ------------------------------------------------------------------------------
+proc startGattTask(self: App, device: BleDevice) {.async.} =
+  let gatt_res = await self.ble.connect(device, timeout = 200)
+  if gatt_res.isOk:
+    echo &" ---> [{device.peerAddrStr}] GATT connected."
+    let gatt = gatt_res.get()
+    let id = self.tasks.len + 1
+    let task = newGattTask(id, gatt, device)
+    self.tasks.add(task)
+    asyncCheck task.run()
+  else:
+    echo &"!! [{device.peerAddrStr}] GATT connect failed."
+  discard await self.startStopScan(true)
+
+# ------------------------------------------------------------------------------
+#
+# ------------------------------------------------------------------------------
 proc handleDevice(self: App, device: BleDevice) {.async.} =
   if self.devices.hasKey(device.peerAddrStr):
     # SwitchBot device SCAN_RSP
@@ -70,17 +86,7 @@ proc handleDevice(self: App, device: BleDevice) {.async.} =
       let sbot = self.devices[device.peerAddrStr]
       if sbot.devType == DevType.Unknown:
         self.devices[device.peerAddrStr].devType = devType
-        let gatt_res = await self.ble.connect(device, timeout = 200)
-        if gatt_res.isOk:
-          echo " ---> connected."
-          discard await self.startStopScan(true)
-          let gatt = gatt_res.get()
-          let id = self.tasks.len + 1
-          let task = newGattTask(id, gatt, device)
-          self.tasks.add(task)
-          asyncCheck task.run()
-        else:
-          echo "!! GATT connect failed."
+        await self.startGattTask(device)
     except:
       let errmsg = getCurrentExceptionMsg()
       echo errmsg
@@ -96,23 +102,12 @@ proc handleDevice(self: App, device: BleDevice) {.async.} =
     if companyId == CompanyId:
       let sbot = SwitchBot(bleAddr: device.peerAddrStr, devType: DevType.Unknown)
       self.devices[device.peerAddrStr] = sbot
-    elif companyId == 0x000d'u16:
-      # TI
-      if device.peerAddrStr.startsWith("C4:BE:84"):
-        # SensorTag
+    elif companyId == 0x000d'u16 and device.peerAddrStr.startsWith("C4:BE:84"):
+      # TI SensorTag
+      if not self.devices.hasKey(device.peerAddrStr):
         let stag = SwitchBot(bleAddr: device.peerAddrStr, devType: DevType.SensorTag)
         self.devices[device.peerAddrStr] = stag
-        let gatt_res = await self.ble.connect(device, timeout = 200)
-        if gatt_res.isOk:
-          echo " ---> connected."
-          discard await self.startStopScan(true)
-          let gatt = gatt_res.get()
-          let id = self.tasks.len + 1
-          let task = newGattTask(id, gatt, device)
-          self.tasks.add(task)
-          asyncCheck task.run()
-        else:
-          echo "!! GATT connect failed."
+        await self.startGattTask(device)
 
 # ------------------------------------------------------------------------------
 #
