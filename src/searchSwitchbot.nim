@@ -5,10 +5,13 @@ import std/strformat
 import std/strutils
 import std/tables
 import std/times
+import results
 import nim_nucleus
+import ./task/gattTask
 
 type
   DevType {.pure.} = enum
+    Unknown = "?"
     Bot = "H"
     Meter = "T"
     Humidifier = "e"
@@ -22,12 +25,14 @@ type
     PlugMini = "g"
     PlugMini2 = "j"
     MeterPlus = "i"
+    SensorTag = "!"
   SwitchBot = object
     devType: DevType
     bleAddr: string
   AppObj = object
     ble: BleNim
     devices: Table[string, SwitchBot]
+    tasks: seq[GattTask]
   App = ref AppObj
 
 const
@@ -52,7 +57,7 @@ proc startStopScan(self: App, start: bool): Future[bool] {.async.} =
 # ------------------------------------------------------------------------------
 #
 # ------------------------------------------------------------------------------
-proc handleDevice(self: App, device: BleDevice) =
+proc handleDevice(self: App, device: BleDevice) {.async.} =
   if self.devices.hasKey(device.peerAddrStr):
     # SwitchBot device SCAN_RSP
     let uuid = device.advertiseData.getLe16(2)
@@ -61,22 +66,53 @@ proc handleDevice(self: App, device: BleDevice) =
       return
     try:
       let devType = parseEnum[DevType]($device.advertiseData.getU8(4).chr)
-      self.devices[device.peerAddrStr].devType = devType
       echo &"Address: {device.peerAddrStr}, device: {devType.symbolName} found."
+      let sbot = self.devices[device.peerAddrStr]
+      if sbot.devType == DevType.Unknown:
+        self.devices[device.peerAddrStr].devType = devType
+        let gatt_res = await self.ble.connect(device, timeout = 200)
+        if gatt_res.isOk:
+          echo " ---> connected."
+          discard await self.startStopScan(true)
+          let gatt = gatt_res.get()
+          let id = self.tasks.len + 1
+          let task = newGattTask(id, gatt, device)
+          self.tasks.add(task)
+          asyncCheck task.run()
+        else:
+          echo "!! GATT connect failed."
     except:
       let errmsg = getCurrentExceptionMsg()
       echo errmsg
       return
   else:
-    echo &"Address: {device.peerAddrStr} found."
     if device.manufacturerData.isNone:
       return
     let manData = device.manufacturerData.get()
     if manData.len < 2:
       return
     let companyId = manData.getLe16(0)
+    echo &"Address: {device.peerAddrStr} (CompanyId: {companyId:04x}) found."
     if companyId == CompanyId:
-      self.devices[device.peerAddrStr] = SwitchBot(bleAddr: device.peerAddrStr)
+      let sbot = SwitchBot(bleAddr: device.peerAddrStr, devType: DevType.Unknown)
+      self.devices[device.peerAddrStr] = sbot
+    elif companyId == 0x000d'u16:
+      # TI
+      if device.peerAddrStr.startsWith("C4:BE:84"):
+        # SensorTag
+        let stag = SwitchBot(bleAddr: device.peerAddrStr, devType: DevType.SensorTag)
+        self.devices[device.peerAddrStr] = stag
+        let gatt_res = await self.ble.connect(device, timeout = 200)
+        if gatt_res.isOk:
+          echo " ---> connected."
+          discard await self.startStopScan(true)
+          let gatt = gatt_res.get()
+          let id = self.tasks.len + 1
+          let task = newGattTask(id, gatt, device)
+          self.tasks.add(task)
+          asyncCheck task.run()
+        else:
+          echo "!! GATT connect failed."
 
 # ------------------------------------------------------------------------------
 #
@@ -91,7 +127,7 @@ proc waitAdvertising(self: App, timeout: int): Future[Table[string, SwitchBot]] 
     if dev_res.isErr:
       break
     let dev = dev_res.get()
-    self.handleDevice(dev)
+    await self.handleDevice(dev)
   result = self.devices
 
 # ------------------------------------------------------------------------------
